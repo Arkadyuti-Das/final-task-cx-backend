@@ -244,7 +244,18 @@ async function init() {
         path: "/employees/query",
         handler: async (req, h) => {
           try {
-            const {page = 1, limit = 100, searchValue, salaryStart, salaryEnd, sortField, sortBy, departments}=req.query;
+            const {
+              page = 1,
+              limit = 100,
+              searchValue,
+              salaryStart,
+              salaryEnd,
+              sortField,
+              sortBy,
+              departments,
+              ageMin,
+              ageMax,
+            } = req.query;
 
             const limitValue = parseInt(limit);
             const offsetValue = (parseInt(page) - 1) * limitValue;
@@ -256,6 +267,7 @@ async function init() {
 
             const whereConditions = [];
 
+            // Name search filter
             if (searchValue) {
               whereConditions.push({
                 [Op.or]: [
@@ -265,7 +277,47 @@ async function init() {
               });
             }
 
-            // Salary filter config (only include if both start and end are defined)
+            let orderClause = [];
+
+            // Sorting logic
+            if (sortField && sortBy) {
+              if (sortField === "salary") {
+                orderClause.push([{ model: salaryModel }, "salary", sortBy]);
+              } else if (sortField === "dept_name") {
+                orderClause.push([
+                  {
+                    model: departmentEmployeeModel,
+                    include: [{ model: departmentModel }],
+                  },
+                  departmentModel,
+                  "dept_name",
+                  sortBy,
+                ]);
+              } else {
+                orderClause.push([sortField, sortBy]); // for first_name, etc.
+              }
+            }
+
+            // Age filter logic
+            const ageCondition = {};
+            if (ageMin != null && ageMax != null) {
+              ageCondition[Op.between] = [parseInt(ageMin), parseInt(ageMax)];
+            } else if (ageMin != null) {
+              ageCondition[Op.gte] = parseInt(ageMin);
+            } else if (ageMax != null) {
+              ageCondition[Op.lte] = parseInt(ageMax);
+            }
+
+            if (Object.keys(ageCondition).length > 0) {
+              whereConditions.push(
+                where(
+                  fn("TIMESTAMPDIFF", literal("YEAR"), col("birth_date"), fn("CURDATE")),
+                  ageCondition
+                )
+              );
+            }
+
+            // Salary include config
             let salaryInclude = {
               model: salaryModel,
               attributes: ["salary"],
@@ -274,12 +326,12 @@ async function init() {
             if (salaryStart !== undefined && salaryEnd !== undefined) {
               salaryInclude.where = {
                 salary: {
-                  [Op.between]: [salaryStart, salaryEnd],
+                  [Op.between]: [parseInt(salaryStart), parseInt(salaryEnd)],
                 },
               };
             }
 
-            // Department filter config (only include dept_name filter if deptSearchList has values)
+            // Department include config
             let departmentInclude = {
               model: departmentEmployeeModel,
               attributes: ["dept_no"],
@@ -296,9 +348,9 @@ async function init() {
               };
             }
 
-            // Build final query
+            // Final DB query
             const result = await employeeModel.findAll({
-              attributes: ["emp_no", "first_name", "last_name"],
+              attributes: ["emp_no", "first_name", "last_name", "birth_date"],
               where: {
                 [Op.and]: whereConditions,
               },
@@ -313,15 +365,37 @@ async function init() {
               ],
               offset: offsetValue,
               limit: limitValue,
-              ...(sortField && sortBy ? { order: [[sortField, sortBy]] } : {}), // optional order
+              // ...(sortField && sortBy ? { order: [[sortField, sortBy]] } : {}),
+              order: orderClause,
+
             });
 
-            return result;
+            // return result;
+
+            //Count the total number of records for the given query
+            const totalCount = await employeeModel.count({
+              where: {
+                [Op.and]: whereConditions,
+              },
+              include: [
+                salaryInclude,
+                departmentInclude,
+              ],
+              distinct: true,
+            });
+            console.log("Total count: ", totalCount);
+
+            return {
+              data: result,
+              totalCount
+            };
           } catch (error) {
             console.log("Error in /employees/query: ", error.message);
+            return h.response({ error: "Internal Server Error" }).code(500);
           }
         },
-      },
+      }
+
     ]);
   } catch (error) {
     console.log("OOPS! An error occurred. Error Message: ", error.message);
